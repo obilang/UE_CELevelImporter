@@ -1,0 +1,210 @@
+import maya.cmds as cmds
+import os
+import re
+import xml.etree.ElementTree as ET
+
+def ensure_fbx_plugin_loaded():
+    if not cmds.pluginInfo('fbxmaya', query=True, loaded=True):
+        try:
+            cmds.loadPlugin('fbxmaya')
+            print("FBX plugin loaded.")
+        except:
+            print("Failed to load FBX plugin.")
+            raise RuntimeError("FBX plugin is required but could not be loaded.")
+
+def parse_material_names_from_mtl(mtl_path):
+    """Parse the bridge.mtl XML and return a list of material names in order."""
+    if not os.path.exists(mtl_path):
+        cmds.warning("MTL file not found: {}".format(mtl_path))
+        return []
+    
+    tree = ET.parse(mtl_path)
+    root = tree.getroot()
+    
+    material_names = []
+    submaterials = root.find('SubMaterials')
+    if submaterials is None:
+        cmds.warning("No SubMaterials found in MTL file")
+        return []
+
+    for mat in submaterials.findall('Material'):
+        name = mat.get('Name')
+        if name:
+            material_names.append(name)
+    return material_names
+
+def rename_materials_from_mtl(prefix, folder):
+    """
+    Rename materials with <prefix>_materialX names based on the corresponding MTL file in folder.
+    E.g. prefix='bridge_mtl' -> MTL file 'bridge.mtl' in the same folder.
+    """
+    # Remove _mtl suffix if it exists to get base name for mtl file
+    base_name = prefix
+    print(base_name)
+    if base_name.endswith("_mtl"):
+        base_name = base_name[:-4]  # remove last 4 chars "_mtl"
+    print(base_name)
+    
+    mtl_filename = base_name + ".mtl"
+    mtl_path = os.path.join(folder, mtl_filename)
+    
+    material_names = parse_material_names_from_mtl(mtl_path)
+    if not material_names:
+        cmds.warning(f"No materials found or failed to parse {mtl_path}. Skipping renaming.")
+        return
+    
+    pattern = re.compile(r"^{}_(material)(\d+)$".format(re.escape(prefix)))
+    
+    materials = cmds.ls(materials=True)
+    renamed_count = 0
+    
+    for mat in materials:
+        match = pattern.match(mat)
+        if match:
+            index = int(match.group(2)) - 1  # 1-based indexing in material slot
+            if 0 <= index < len(material_names):
+                new_name = material_names[index]
+                try:
+                    # Rename material if a different name
+                    if mat != new_name and not cmds.objExists(new_name):
+                        cmds.rename(mat, new_name)
+                        print(f"Renamed material '{mat}' to '{new_name}'")
+                        renamed_count += 1
+                    else:
+                        print(f"Skipped renaming '{mat}' since target name '{new_name}' exists or same")
+                except Exception as e:
+                    cmds.warning(f"Failed to rename '{mat}': {e}")
+            else:
+                cmds.warning(f"Material index {index+1} out of range for materials in {mtl_filename}")
+    
+    print(f"Material renaming done: {renamed_count} materials renamed.")
+
+def delete_proxy_and_shadowproxy_faces():
+    """
+    Delete faces assigned to materials starting with 'proxy_mat_' or 'shadowproxy', then delete those materials.
+    """
+    mats_to_remove = []
+    
+    all_materials = cmds.ls(materials=True)
+    for mat in all_materials:
+        if mat.startswith("proxy_mat_") or mat == "shadowproxy":
+            mats_to_remove.append(mat)
+    
+    if not mats_to_remove:
+        print("No proxy_mat_ or shadowproxy materials found to remove.")
+        return
+    
+    for mat in mats_to_remove:
+        # Find shading groups connected to this material
+        sgs = cmds.listConnections(mat, type='shadingEngine') or []
+        
+        for sg in sgs:
+            # Get all geometry assigned to this shading group
+            members = cmds.sets(sg, query=True) or []
+            for member in members:
+                # We only want mesh faces
+                if ".f[" in member:
+                    try:
+                        # Delete the face component
+                        cmds.delete(member)
+                        print(f"Deleted face(s) {member} assigned to material {mat}")
+                    except Exception as e:
+                        cmds.warning(f"Failed to delete face(s) {member}: {e}")
+                else:
+                    # If member is whole object, deleting full object might be undesirable,
+                    # so skip or handle differently if needed.
+                    pass
+        
+        # Now delete shading group and material itself
+        try:
+            if sgs:
+                cmds.delete(sgs)
+                print(f"Deleted shading group(s) {sgs} connected to material {mat}")
+            cmds.delete(mat)
+            print(f"Deleted material {mat}")
+        except Exception as e:
+            cmds.warning(f"Failed to delete material or shading group for {mat}: {e}")
+
+def import_dae_export_fbx(dae_file_paths):
+    ensure_fbx_plugin_loaded()
+    
+    for dae_path in dae_file_paths:
+        if not os.path.exists(dae_path):
+            print(f"File does not exist: {dae_path}")
+            continue
+        
+        # Clear the scene
+        cmds.file(new=True, force=True)
+
+        # Import the DAE file
+        try:
+            cmds.file(dae_path, i=True, type="DAE_FBX", ignoreVersion=True, ra=True,
+                      mergeNamespacesOnClash=False, options="mo=1", pr=True)
+            print(f"Imported: {dae_path}")
+        except Exception as e:
+            print(f"Failed to import {dae_path}: {e}")
+            continue
+        
+        # Find material prefix by searching materials matching *_material\d+ pattern
+        mats = cmds.ls(materials=True)
+        prefix = None
+        pattern = re.compile(r"^(.*)_(material)\d+$")
+        for mat in mats:
+            m = pattern.match(mat)
+            if m:
+                prefix = m.group(1)
+                break
+        
+        folder = os.path.dirname(dae_path)
+        if prefix:
+            rename_materials_from_mtl(prefix, folder)
+            delete_proxy_and_shadowproxy_faces()
+        else:
+            print("No material with pattern '*_material<number>' found. Skipping renaming.")
+        
+        # Select all top level transforms (assemblies) before exporting
+        all_transforms = cmds.ls(assemblies=True)
+        if not all_transforms:
+            print(f"No top-level transforms found in {dae_path} to export.")
+            continue
+
+        cmds.select(all_transforms, replace=True)
+
+        # Define export path
+        filename = os.path.splitext(os.path.basename(dae_path))[0]
+        fbx_path = os.path.join(folder, filename + ".fbx")
+        
+        try:
+            cmds.file(fbx_path,
+                      force=True,
+                      options="v=0",
+                      typ="FBX export",
+                      pr=True,
+                      es=True)  # export selected
+            print(f"Exported FBX: {fbx_path}")
+        except Exception as e:
+            print(f"Failed to export FBX for {dae_path}: {e}")
+
+# Example usage - fill your dae paths here
+dae_files = [
+    r"D:\temp\rataja\objects\buildings\walls\walls_rataje\drawbridge_castle_big.dae",
+    # add more if needed
+]
+
+def find_all_dae_files(folder_path):
+    """
+    Recursively find all .dae files in folder_path and its subfolders.
+    Returns a list of full file paths.
+    """
+    dae_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith(".dae"):
+                dae_files.append(os.path.join(root, file))
+    return dae_files
+    
+folder_to_search = r"D:\temp\rataja"
+all_dae_files = find_all_dae_files(folder_to_search)
+
+# Run the whole process
+import_dae_export_fbx(all_dae_files)
