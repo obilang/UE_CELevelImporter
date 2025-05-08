@@ -1,0 +1,36 @@
+#########################
+# list directories & files
+#########################
+/Intermediate/*
+/Binaries/*
+/DerivedDataCache/*
+/Saved/*
+
+
+#########################
+# UE5 Ignores
+#########################
+# Ignore all Visual Studio temp files.
+*.suo
+*.opensdf
+*.sdf
+*.pdb
+
+# Ignore built binaries and temporary build files
+*/obj/*
+*.csprojAssemblyReference.cache
+
+# Ignore Python cached files
+*.pyc
+
+# Ignore JetBrain's IDE folders
+.idea/
+!.idea/runConfigurations
+.gradle/
+
+# Ignore all .code-workspace files
+*.code-workspace
+
+# vscode ignore
+**/.vscode/
+
