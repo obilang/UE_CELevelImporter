@@ -13,7 +13,7 @@ def ensure_fbx_plugin_loaded():
             raise RuntimeError("FBX plugin is required but could not be loaded.")
 
 def parse_material_names_from_mtl(mtl_path):
-    """Parse the bridge.mtl XML and return a list of material names in order."""
+    """Parse the .mtl XML and return a list of material names, ignoring the 'proxy' material."""
     if not os.path.exists(mtl_path):
         cmds.warning("MTL file not found: {}".format(mtl_path))
         return []
@@ -26,11 +26,12 @@ def parse_material_names_from_mtl(mtl_path):
     if submaterials is None:
         cmds.warning("No SubMaterials found in MTL file")
         return []
-
+    
     for mat in submaterials.findall('Material'):
         name = mat.get('Name')
-        if name:
-            material_names.append(name)
+        # if name and name != "proxy":  # Ignore the 'proxy' material
+        material_names.append(name)
+    
     return material_names
 
 def rename_materials_from_mtl(prefix, folder):
@@ -61,7 +62,7 @@ def rename_materials_from_mtl(prefix, folder):
     for mat in materials:
         match = pattern.match(mat)
         if match:
-            index = int(match.group(2)) - 1  # 1-based indexing in material slot
+            index = int(match.group(2))
             if 0 <= index < len(material_names):
                 new_name = material_names[index]
                 try:
@@ -87,7 +88,7 @@ def delete_proxy_and_shadowproxy_faces():
     
     all_materials = cmds.ls(materials=True)
     for mat in all_materials:
-        if mat.startswith("proxy_mat_") or mat == "shadowproxy":
+        if mat.startswith("proxy_mat_") or mat == "shadowproxy" or mat == "shadow" or mat == "ERROR_proxy":
             mats_to_remove.append(mat)
     
     if not mats_to_remove:
@@ -203,7 +204,7 @@ def find_all_dae_files(folder_path):
                 dae_files.append(os.path.join(root, file))
     return dae_files
     
-folder_to_search = r"D:\temp\rataja"
+folder_to_search = r"D:\temp\rataja\objects\props\torture_rack"
 all_dae_files = find_all_dae_files(folder_to_search)
 
 # Run the whole process
