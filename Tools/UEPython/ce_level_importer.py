@@ -351,12 +351,14 @@ def recreate_level_in_unreal(level_data):
             recreate_layer_in_unreal(layer)
 
 def recreate_layer_in_unreal(layer, parent_layer=None):
-    data_layer_create_param = unreal.DataLayerCreationParameters()
-    data_layer_create_param.data_layer_asset = None
-    data_layer_create_param.is_private = True
-    
-    data_layer_instance = data_layer_sub.create_data_layer_instance(data_layer_create_param)
-    result = unreal.PythonFunctionLibrary().set_data_layer_short_name(data_layer_instance, layer.name)
+    data_layer_instance = data_layer_sub.get_data_layer_from_label(layer.name)
+    if not data_layer_instance:
+        data_layer_create_param = unreal.DataLayerCreationParameters()
+        data_layer_create_param.data_layer_asset = None
+        data_layer_create_param.is_private = True
+        
+        data_layer_instance = data_layer_sub.create_data_layer_instance(data_layer_create_param)
+        result = unreal.PythonFunctionLibrary().set_data_layer_short_name(data_layer_instance, layer.name)
     
     if parent_layer:
         data_layer_sub.set_parent_data_layer(data_layer_instance, parent_layer)
