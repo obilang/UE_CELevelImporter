@@ -42,6 +42,9 @@ def build_staticmesh_import_options():
     options.static_mesh_import_data.set_editor_property('generate_lightmap_u_vs', False)
     options.static_mesh_import_data.set_editor_property('auto_generate_collision', True)
     options.static_mesh_import_data.set_editor_property('one_convex_hull_per_ucx', True)
+    options.static_mesh_import_data.set_editor_property('build_nanite', True)
+    # force fix the normal from cgf
+    options.static_mesh_import_data.set_editor_property('recompute_normals', True)
     
     return options
 

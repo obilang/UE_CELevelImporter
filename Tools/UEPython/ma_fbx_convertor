@@ -3,6 +3,11 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+
+def decode_fbxasc_name(name):
+    """Decode FBXASC### patterns in Maya mesh names."""
+    return re.sub(r'FBXASC(\d{3})', lambda m: chr(int(m.group(1))), name)
+
 def ensure_fbx_plugin_loaded():
     if not cmds.pluginInfo('fbxmaya', query=True, loaded=True):
         try:
@@ -41,13 +46,21 @@ def rename_materials_from_mtl(prefix, folder):
     """
     # Remove _mtl suffix if it exists to get base name for mtl file
     base_name = prefix
-    print(base_name)
+    base_name = decode_fbxasc_name(base_name)  # Decode FBXASC patterns
+    # print(f"Base name for MTL: {base_name}")
     if base_name.endswith("_mtl"):
         base_name = base_name[:-4]  # remove last 4 chars "_mtl"
-    print(base_name)
     
     mtl_filename = base_name + ".mtl"
     mtl_path = os.path.join(folder, mtl_filename)
+    
+    if not os.path.exists(mtl_path):
+        found_mtl_files = [f for f in os.listdir(folder) if f.endswith('.mtl')]
+        for mtl_file in found_mtl_files:
+            # get file name without extension
+            mtl_name = os.path.splitext(mtl_file)[0]
+            if mtl_name in base_name:
+                mtl_path = os.path.join(folder, mtl_file)
     
     material_names = parse_material_names_from_mtl(mtl_path)
     if not material_names:
@@ -68,8 +81,8 @@ def rename_materials_from_mtl(prefix, folder):
                 try:
                     # Rename material if a different name
                     if mat != new_name and not cmds.objExists(new_name):
-                        cmds.rename(mat, new_name)
-                        print(f"Renamed material '{mat}' to '{new_name}'")
+                        cmds.rename(mat, f"{prefix}_{new_name}")
+                        print(f"Renamed material '{mat}' to {prefix}_{new_name}")
                         renamed_count += 1
                     else:
                         print(f"Skipped renaming '{mat}' since target name '{new_name}' exists or same")
@@ -80,7 +93,7 @@ def rename_materials_from_mtl(prefix, folder):
     
     print(f"Material renaming done: {renamed_count} materials renamed.")
 
-def delete_proxy_and_shadowproxy_faces():
+def delete_proxy_and_shadowproxy_faces(prefix):
     """
     Delete faces assigned to materials starting with 'proxy_mat_' or 'shadowproxy', then delete those materials.
     """
@@ -88,7 +101,9 @@ def delete_proxy_and_shadowproxy_faces():
     
     all_materials = cmds.ls(materials=True)
     for mat in all_materials:
-        if mat.startswith("proxy_mat_") or mat == "shadowproxy" or mat == "shadow" or mat == "ERROR_proxy":
+        mat_no_prefix = mat.replace(f"{prefix}_", "")  
+        print(f"Checking material: {mat} (no prefix: {mat_no_prefix})")
+        if mat_no_prefix.startswith("proxy_mat_") or mat_no_prefix == "shadowproxy" or mat_no_prefix == "shadow" or mat_no_prefix == "ERROR_proxy" or mat_no_prefix == "windowproxy":
             mats_to_remove.append(mat)
     
     if not mats_to_remove:
@@ -146,6 +161,22 @@ def import_dae_export_fbx(dae_file_paths):
             print(f"Failed to import {dae_path}: {e}")
             continue
         
+        # Combine all meshes into one
+        all_meshes = cmds.ls(type='mesh', long=True)
+        if all_meshes:
+            # Get parent transforms of all meshes
+            mesh_transforms = list(set(cmds.listRelatives(all_meshes, parent=True, fullPath=True)))
+            if len(mesh_transforms) > 1:
+                result = cmds.polyUnite(mesh_transforms, name="combinedMesh", ch=False)
+                combined = result[0] if isinstance(result, (list, tuple)) else result
+                cmds.delete(combined, constructionHistory=True)
+                cmds.select(combined, replace=True)
+                print(f"Combined {len(mesh_transforms)} meshes into one: {combined}")
+            else:
+                print("Only one mesh found, skipping combine.")
+        else:
+            print("No meshes found to combine.")
+        
         # Find material prefix by searching materials matching *_material\d+ pattern
         mats = cmds.ls(materials=True)
         prefix = None
@@ -156,10 +187,19 @@ def import_dae_export_fbx(dae_file_paths):
                 prefix = m.group(1)
                 break
         
+        # If not found, try to find a material with '_mtl_' in the name
+        if not prefix:
+            for mat in mats:
+                idx = mat.find('_mtl_')
+                if idx != -1:
+                    prefix = mat[:idx + 4]  # include '_mtl'
+                    print(f"Prefix found by '_mtl_' pattern: {prefix}")
+                    break
+        
         folder = os.path.dirname(dae_path)
         if prefix:
             rename_materials_from_mtl(prefix, folder)
-            delete_proxy_and_shadowproxy_faces()
+            delete_proxy_and_shadowproxy_faces(prefix)
         else:
             print("No material with pattern '*_material<number>' found. Skipping renaming.")
         
@@ -188,9 +228,11 @@ def import_dae_export_fbx(dae_file_paths):
 
 # Example usage - fill your dae paths here
 dae_files = [
-    r"D:\temp\rataja\objects\buildings\walls\walls_rataje\drawbridge_castle_big.dae",
+    r"D:\temp\rataja\objects\buildings\walls\walls_rataje\walls_north_tower1_bricks.dae",
     # add more if needed
 ]
+
+# import_dae_export_fbx(dae_files)
 
 def find_all_dae_files(folder_path):
     """
@@ -204,7 +246,7 @@ def find_all_dae_files(folder_path):
                 dae_files.append(os.path.join(root, file))
     return dae_files
     
-folder_to_search = r"D:\temp\rataja\objects\props\torture_rack"
+folder_to_search = r"D:\temp\rataja\objects"
 all_dae_files = find_all_dae_files(folder_to_search)
 
 # Run the whole process
