@@ -6,6 +6,8 @@
 /DerivedDataCache/*
 /Saved/*
 /Content/*
+!/Content/Materials/
+!/Content/Textures/
 
 
 #########################
