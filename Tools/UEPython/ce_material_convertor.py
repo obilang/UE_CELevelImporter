@@ -142,12 +142,21 @@ def parse_mtl_file(file_path) -> List[Material]:
         tree = ET.parse(file_path)
         root = tree.getroot()
         sub_node = root.find(".//SubMaterials")
+        # If <SubMaterials> not found, check if root is <Material>
         if sub_node is None:
-            print(f"SubMaterials not found in {file_path}")
-            return materials
+            if root.tag == "Material":
+                material_elems = [root]
+            else:
+                print(f"SubMaterials not found and root is not Material in {file_path}")
+                return materials
+        else:
+            material_elems = sub_node.findall("Material")
 
-        for material_elem in sub_node.findall("Material"):
-            mat = Material(material_elem.attrib.get("Name", "").replace(".", "_"))
+        for material_elem in material_elems:
+            mat_name = material_elem.attrib.get("Name", "")
+            if not mat_name:
+                mat_name = os.path.splitext(os.path.basename(file_path))[0]
+            mat = Material(mat_name.replace(".", "_"))
             # Set Material attributes
             for k, v in material_elem.attrib.items():
                 if hasattr(mat, k):
@@ -223,9 +232,54 @@ def collect_unique_attributes(directory):
 
 
 def find_material_by_name(materials, name):
+    # First try exact match
     for mat in materials:
         if mat.name == name:
             return mat
+    
+    # If no exact match, try to find by decrementing trailing numbers
+    import re
+    
+    # Pattern to match trailing numbers (e.g., "_03", "_02_decals1")
+    pattern = r'(.+?)(\d+)(_.*)?$'
+    match = re.match(pattern, name)
+    
+    if match:
+        base_name = match.group(1)  # Everything before the number
+        number = int(match.group(2))  # The number
+        suffix = match.group(3) or ""  # Everything after the number (if any)
+        
+        # Try decrementing the number until we find a match or reach 0
+        for i in range(number - 1, 0, -1):
+            # For cases like "stone_wall_03" -> "stone_wall_02"
+            candidate_name = f"{base_name}{i:02d}{suffix}"
+            for mat in materials:
+                if mat.name == candidate_name:
+                    return mat
+            
+            # Also try without zero-padding for single digits
+            if i < 10:
+                candidate_name = f"{base_name}{i}{suffix}"
+                for mat in materials:
+                    if mat.name == candidate_name:
+                        return mat
+        
+        # Special case for suffix numbers like "_decals1" -> "_decals"
+        if suffix and re.match(r'_.*\d+$', suffix):
+            # Remove trailing digit from suffix
+            suffix_no_digit = re.sub(r'\d+$', '', suffix)
+            candidate_name = f"{base_name}{number:02d}{suffix_no_digit}"
+            for mat in materials:
+                if mat.name == candidate_name:
+                    return mat
+            
+            # Also try with original number decremented
+            for i in range(number - 1, 0, -1):
+                candidate_name = f"{base_name}{i:02d}{suffix_no_digit}"
+                for mat in materials:
+                    if mat.name == candidate_name:
+                        return mat
+    
     return None
 
 def find_texture_by_path(mat_data, texture_name, is_gloss=False):
@@ -265,14 +319,18 @@ def str_to_vec3(s):
         return [float(part.strip()) for part in parts]
     return [0.0, 0.0, 0.0]  # Default if parsing fails
 
-def create_material_instance(material_data: Material, target_path, mesh_name):
+
+def create_material_instance(material_data: Material, target_path, mesh_name, parent_material_path, cached_instance):
     import unreal
-    PARENT_MATERIAL_PATH = "/Game/Materials/CE/M_CE_Illum"
-    parent_material = unreal.EditorAssetLibrary.load_asset(PARENT_MATERIAL_PATH)
+    parent_material = unreal.EditorAssetLibrary.load_asset(parent_material_path)
     
     target_package_name = f"{target_path}/mtl_{mesh_name}_{material_data.name}"
     material_instance = None
     if unreal.EditorAssetLibrary.does_asset_exist(target_package_name):
+        material_instance = unreal.EditorAssetLibrary.load_asset(target_package_name)
+        if material_instance in cached_instance:
+            print(f"Material instance {target_package_name} already exists in cache, skipping creation.")
+            return material_instance
         unreal.EditorAssetLibrary.delete_asset(target_package_name)
         # material_instance = unreal.EditorAssetLibrary.load_asset(target_package_name)
     # Create the material instance
@@ -289,10 +347,33 @@ def create_material_instance(material_data: Material, target_path, mesh_name):
     
     if material_instance:
         material_instance.set_editor_property("parent", parent_material)
+    
+    return material_instance
+
+
+def create_material_instance_illum(material_data: Material, target_path, mesh_name, cached_instance):
+    import unreal
+
+    material_instance = create_material_instance(
+        material_data, target_path, mesh_name, 
+        "/Game/Materials/CE/M_CE_Illum", cached_instance)
+    
+    if material_instance:
         # set material properties
         mat_edit_lib = unreal.MaterialEditingLibrary
         diffuse_tex = find_texture_by_path(material_data, "Diffuse")
         if diffuse_tex:
+            if material_data.AlphaTest and float(material_data.AlphaTest) > 0.0:
+                diffuse_tex_data = unreal.EditorAssetLibrary.find_asset_data(diffuse_tex.get_path_name())
+                has_alpha  = diffuse_tex_data.get_tag_value("HasAlphaChannel")
+                if has_alpha == "True":
+                    print(f"Material {material_data.name} has alpha channel in Diffuse texture, setting blend mode to Masked.")
+                    overide_prop = material_instance.get_editor_property("base_property_overrides")
+                    overide_prop.set_editor_property("override_blend_mode", True)
+                    overide_prop.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+                    overide_prop.set_editor_property("override_opacity_mask_clip_value", True)
+                    overide_prop.set_editor_property("opacity_mask_clip_value", float(material_data.AlphaTest))
+                    material_instance.set_editor_property("base_property_overrides", overide_prop)
             mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Diffuse", diffuse_tex)
         bump_tex = find_texture_by_path(material_data, "Bumpmap")
         if bump_tex:
@@ -404,6 +485,76 @@ def create_material_instance(material_data: Material, target_path, mesh_name):
     
     return None
 
+def create_material_instance_vegetation(material_data: Material, target_path, mesh_name, cached_instance):
+    import unreal
+    PARENT_MATERIAL_PATH = "/Game/Materials/CE/M_CE_Vegetation"
+    
+    material_instance = create_material_instance(
+        material_data, target_path, mesh_name, 
+        PARENT_MATERIAL_PATH, cached_instance)
+    
+    if material_instance:
+        # set material properties
+        mat_edit_lib = unreal.MaterialEditingLibrary
+        diffuse_tex = find_texture_by_path(material_data, "Diffuse")
+        if diffuse_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Diffuse", diffuse_tex)
+        bump_tex = find_texture_by_path(material_data, "Bumpmap")
+        if bump_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Bumpmap", bump_tex)
+        gloss_tex = find_texture_by_path(material_data, "Bumpmap", is_gloss=True)
+        if gloss_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Bumpmap Gloss", gloss_tex)
+            
+        if material_data.Diffuse:
+            mat_edit_lib.set_material_instance_vector_parameter_value(
+                material_instance, "MatDiffuse", str_to_vec3(material_data.Diffuse))
+
+        opacity_tex = find_texture_by_path(material_data, "Opacity")
+        if opacity_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(
+                material_instance, "Opacity", opacity_tex)
+            
+        unreal.EditorAssetLibrary.save_loaded_asset(material_instance)
+        return material_instance
+    
+    return None
+
+
+def create_material_instance_glass(material_data: Material, target_path, mesh_name, cached_instance):
+    import unreal
+    PARENT_MATERIAL_PATH = "/Game/Materials/CE/M_CE_Glass"
+    
+    material_instance = create_material_instance(
+        material_data, target_path, mesh_name, 
+        PARENT_MATERIAL_PATH, cached_instance)
+    
+    if material_instance:
+        # set material properties
+        mat_edit_lib = unreal.MaterialEditingLibrary
+        diffuse_tex = find_texture_by_path(material_data, "Diffuse")
+        if diffuse_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Diffuse", diffuse_tex)
+        bump_tex = find_texture_by_path(material_data, "Bumpmap")
+        if bump_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Bumpmap", bump_tex)
+        gloss_tex = find_texture_by_path(material_data, "Bumpmap", is_gloss=True)
+        if gloss_tex:
+            mat_edit_lib.set_material_instance_texture_parameter_value(material_instance, "Bumpmap Gloss", gloss_tex)
+            
+        if material_data.Diffuse:
+            mat_edit_lib.set_material_instance_vector_parameter_value(
+                material_instance, "MatDiffuse", str_to_vec3(material_data.Diffuse))
+        if material_data.Specular:
+            mat_edit_lib.set_material_instance_vector_parameter_value(
+                material_instance, "MatSpecular", str_to_vec3(material_data.Specular))
+            
+        unreal.EditorAssetLibrary.save_loaded_asset(material_instance)
+        return material_instance
+    
+    return None
+    
+
 def create_and_assign_mat_to_mesh(mesh_data):
     import unreal
     static_mesh = unreal.EditorAssetLibrary.load_asset(mesh_data.package_name)
@@ -412,6 +563,8 @@ def create_and_assign_mat_to_mesh(mesh_data):
     name = str(mesh_data.asset_name)
     source_folder = os.path.join(ce_path_utils.CRY_ENGINE_OUTPUT_FOLDER_ROOT, mesh_path.replace('/Game/Old/', ''))
     if os.path.exists(source_folder):
+        has_transparency = False
+        cached_instance = []
         for mat_slot in static_mesh.static_materials:
             mat_slot_name = str(mat_slot.material_slot_name)
             
@@ -425,25 +578,52 @@ def create_and_assign_mat_to_mesh(mesh_data):
                 unreal.log_warning(f"Material slot name {mat_slot_name} does not match expected format, skipping.")
                 continue
             
-            mtl_file = parts[0]
+            mtl_file_name = parts[0]
             mat_name = parts[1]
         
-            target_mat = os.path.join(source_folder, mtl_file + ".mtl")
+            target_mat = os.path.join(source_folder, mtl_file_name + ".mtl")
             materials = None
             if os.path.exists(target_mat):
                 materials = parse_mtl_file(target_mat)
-            
+            else:
+                root_folder = ce_path_utils.CRY_ENGINE_OUTPUT_FOLDER_ROOT
+                found_mtl_files = []
+                for dirpath, dirnames, filenames in os.walk(root_folder):
+                    for f in filenames:
+                        if f.endswith('.mtl'):
+                            found_mtl_files.append(os.path.join(dirpath, f))
+                for mtl_file in found_mtl_files:
+                    # get file name without extension
+                    mtl_name = os.path.splitext(os.path.basename(mtl_file))[0]
+                    if mtl_name == mtl_file_name:
+                        target_mat = mtl_file
+                        materials = parse_mtl_file(target_mat)
+                        break
+            if materials:
                 mat_data = find_material_by_name(materials, mat_name)
                 if mat_data:
-                    if mat_data.Shader != "Illum":
-                        unreal.log_warning(f"Material {mat_data.name} is not Illum, skipping.")
+                    material_instance = None
+                    if mat_data.Shader == "Illum":
+                        material_instance = create_material_instance_illum(mat_data, mesh_path, mesh_data.asset_name, cached_instance)
+                    elif mat_data.Shader == "Vegetation":
+                        material_instance = create_material_instance_vegetation(mat_data, mesh_path, mesh_data.asset_name, cached_instance)
+                    elif mat_data.Shader == "Glass":
+                        material_instance = create_material_instance_glass(mat_data, mesh_path, mesh_data.asset_name, cached_instance)
+                        has_transparency = True
+                    else:
+                        unreal.log_warning(f"Material {mat_data.name} is not Illum/Vege, skipping.")
                         continue
-                    material_instance = create_material_instance(mat_data, mesh_path, mesh_data.asset_name)
                     if material_instance:
                         mat_slot.material_interface = material_instance
                         static_mesh.set_material(static_mesh.get_material_index(mat_slot.material_slot_name), material_instance)
+                        cached_instance.append(material_instance)
             else:
                 unreal.log_warning(f"Material file not found: {target_mat}")
+        if has_transparency:
+            sm_edit_sub = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
+            nanite_setting = sm_edit_sub.get_nanite_settings(static_mesh)
+            nanite_setting.set_editor_property('enabled', False)
+            sm_edit_sub.set_nanite_settings(static_mesh, nanite_setting, True)
         unreal.EditorAssetLibrary.save_loaded_asset(static_mesh)
     
 

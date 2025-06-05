@@ -4,6 +4,8 @@ import re
 import xml.etree.ElementTree as ET
 
 
+CRY_ENGINE_OUTPUT_FOLDER_ROOT = "D:/temp/rataja"
+
 def decode_fbxasc_name(name):
     """Decode FBXASC### patterns in Maya mesh names."""
     return re.sub(r'FBXASC(\d{3})', lambda m: chr(int(m.group(1))), name)
@@ -62,6 +64,21 @@ def rename_materials_from_mtl(prefix, folder):
             if mtl_name in base_name:
                 mtl_path = os.path.join(folder, mtl_file)
     
+    #if not, search all mtl files inside root folder
+    if not os.path.exists(mtl_path):
+        root_folder = CRY_ENGINE_OUTPUT_FOLDER_ROOT
+        found_mtl_files = []
+        for dirpath, dirnames, filenames in os.walk(root_folder):
+            for f in filenames:
+                if f.endswith('.mtl'):
+                    found_mtl_files.append(os.path.join(dirpath, f))
+        for mtl_file in found_mtl_files:
+            # get file name without extension
+            mtl_name = os.path.splitext(os.path.basename(mtl_file))[0]
+            if mtl_name in base_name:
+                mtl_path = os.path.join(folder, mtl_file)
+    
+    
     material_names = parse_material_names_from_mtl(mtl_path)
     if not material_names:
         cmds.warning(f"No materials found or failed to parse {mtl_path}. Skipping renaming.")
@@ -103,7 +120,7 @@ def delete_proxy_and_shadowproxy_faces(prefix):
     for mat in all_materials:
         mat_no_prefix = mat.replace(f"{prefix}_", "")  
         print(f"Checking material: {mat} (no prefix: {mat_no_prefix})")
-        if mat_no_prefix.startswith("proxy_mat_") or mat_no_prefix == "shadowproxy" or mat_no_prefix == "shadow" or mat_no_prefix == "ERROR_proxy" or mat_no_prefix == "windowproxy":
+        if mat_no_prefix.startswith("proxy_mat_") or mat_no_prefix == "shadowproxy" or mat_no_prefix == "shadow" or mat_no_prefix == "ERROR_proxy" or mat_no_prefix == "windowproxy" or mat_no_prefix == "shadow_proxy":
             mats_to_remove.append(mat)
     
     if not mats_to_remove:
@@ -228,7 +245,7 @@ def import_dae_export_fbx(dae_file_paths):
 
 # Example usage - fill your dae paths here
 dae_files = [
-    r"D:\temp\rataja\objects\buildings\walls\walls_rataje\walls_north_tower1_bricks.dae",
+    r"D:\temp\rataja\objects\buildings\houses\rataje_city\rataje_long_building_roof.dae",
     # add more if needed
 ]
 
@@ -246,7 +263,7 @@ def find_all_dae_files(folder_path):
                 dae_files.append(os.path.join(root, file))
     return dae_files
     
-folder_to_search = r"D:\temp\rataja\objects"
+folder_to_search = r"D:\temp\rataja\objects\vegetation"
 all_dae_files = find_all_dae_files(folder_to_search)
 
 # Run the whole process
